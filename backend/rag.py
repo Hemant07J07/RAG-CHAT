@@ -152,6 +152,10 @@ Rules:
 - Use web context for freshness.
 - If the answer is weak or uncertain, say that clearly.
 - Do not add markdown fences.
+- Write `answer` in warm, natural conversation style.
+- Keep `summary` to 1-2 concise lines.
+- Keep `web_highlights` short and factual.
+- Include only real sources you used in `used_sources`.
 
 Question:
 {question}
@@ -168,19 +172,91 @@ Web context:
         "messages": [
             {
                 "role": "system",
-                "content": "You answer strictly from the provided context and return JSON only.",
+                "content": (
+                    "You are Beamstack RAG Chat, a helpful assistant. "
+                    "Respond in natural conversational language for the `answer` field, "
+                    "and return valid JSON only."
+                ),
             },
             {"role": "user", "content": prompt},
         ],
         "format": "json",
         "stream": False,
+        "keep_alive": "10m",
     }
 
-    r = requests.post(f"{OLLAMA_URL}/api/chat", json=payload, timeout=300)
-    r.raise_for_status()
+    base_url = (OLLAMA_URL or "").rstrip("/")
+    attempts = []
+    content = None
 
-    content = r.json()["message"]["content"]
-    data = json.loads(content)
+    # 1) Ollama native chat endpoint
+    try:
+        r = requests.post(f"{base_url}/api/chat", json=payload, timeout=300)
+        if r.ok:
+            data = r.json()
+            if isinstance(data, dict) and isinstance(data.get("message"), dict):
+                content = data["message"].get("content", "")
+        if content is None:
+            attempts.append(("/api/chat", r.status_code, r.text[:300]))
+    except Exception as e:
+        attempts.append(("/api/chat", "error", str(e)[:300]))
+
+    # 2) OpenAI-compatible chat endpoint
+    if content is None:
+        try:
+            v1_payload = {
+                "model": CHAT_MODEL,
+                "messages": payload["messages"],
+                "stream": False,
+            }
+            r = requests.post(f"{base_url}/v1/chat/completions", json=v1_payload, timeout=300)
+            if r.ok:
+                data = r.json()
+                choices = data.get("choices", []) if isinstance(data, dict) else []
+                if choices and isinstance(choices[0], dict):
+                    msg = choices[0].get("message", {})
+                    if isinstance(msg, dict):
+                        content = msg.get("content", "")
+            if content is None:
+                attempts.append(("/v1/chat/completions", r.status_code, r.text[:300]))
+        except Exception as e:
+            attempts.append(("/v1/chat/completions", "error", str(e)[:300]))
+
+    # 3) Ollama generate endpoint fallback
+    if content is None:
+        try:
+            generate_payload = {
+                "model": CHAT_MODEL,
+                "prompt": prompt,
+                "stream": False,
+                "keep_alive": "10m",
+            }
+            r = requests.post(f"{base_url}/api/generate", json=generate_payload, timeout=300)
+            if r.ok:
+                data = r.json()
+                if isinstance(data, dict):
+                    content = data.get("response", "")
+            if content is None:
+                attempts.append(("/api/generate", r.status_code, r.text[:300]))
+        except Exception as e:
+            attempts.append(("/api/generate", "error", str(e)[:300]))
+
+    if content is None:
+        detail = "\n".join([f"- {p}: {code} {msg}" for p, code, msg in attempts])
+        raise RuntimeError(
+            "Failed to get chat completion from the configured server. "
+            "Tried /api/chat, /v1/chat/completions, and /api/generate.\n" + detail
+        )
+
+    try:
+        data = json.loads(content)
+    except json.JSONDecodeError:
+        data = {
+            "answer": content,
+            "summary": "",
+            "web_highlights": [],
+            "used_sources": [],
+        }
 
     if "used_sources" not in data:
         data["used_sources"] = []
@@ -196,7 +272,18 @@ Web context:
 def chat(question: str):
     local_chunks = retrieve_local(question)
     web_results = search_web(question)
-    result = ask_ollama(question, local_chunks, web_results)
+    try:
+        result = ask_ollama(question, local_chunks, web_results)
+    except Exception as e:
+        result = {
+            "answer": (
+                "I could not reach the local model server right now. "
+                "Please check Ollama and model availability, then try again."
+            ),
+            "summary": str(e),
+            "web_highlights": [],
+            "sources": [],
+        }
 
     if not result["sources"]:
         result["sources"] = [x["source"] for x in local_chunks] + [x["url"] for x in web_results]
