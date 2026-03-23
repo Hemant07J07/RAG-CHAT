@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.venv/
+venv/
+ENV/
+
+# Local environment / secrets
+backend/.env
+.env
+
+# Local data artifacts
+backend/data/index.json
+
+# Node / Next.js (frontend has its own .gitignore too)
+node_modules/
+.next/
+out/
+
+# OS
+.DS_Store
+Thumbs.db
