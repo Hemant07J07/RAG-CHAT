@@ -6,6 +6,8 @@ import numpy as np
 import requests
 from duckduckgo_search import DDGS
 from dotenv import load_dotenv
+from mcp_client import search_local_docs as mcp_search_local_docs
+from mcp_client import search_web as mcp_search_web
 
 load_dotenv()
 
@@ -261,17 +263,34 @@ Web context:
     if "used_sources" not in data:
         data["used_sources"] = []
 
+    normalized_sources = []
+    for src in data.get("used_sources", []):
+        if isinstance(src, str):
+            value = src.strip()
+            if value:
+                normalized_sources.append(value)
+            continue
+
+        if isinstance(src, dict):
+            value = src.get("url") or src.get("source") or src.get("title")
+            if value:
+                normalized_sources.append(str(value).strip())
+            continue
+
+        if src is not None:
+            normalized_sources.append(str(src).strip())
+
     return {
         "answer": data.get("answer", ""),
         "summary": data.get("summary", ""),
         "web_highlights": data.get("web_highlights", []),
-        "sources": list(dict.fromkeys(data.get("used_sources", []))),
+        "sources": list(dict.fromkeys([x for x in normalized_sources if x])),
     }
 
 
 def chat(question: str):
-    local_chunks = retrieve_local(question)
-    web_results = search_web(question)
+    local_chunks = mcp_search_local_docs(question, top_k=4)
+    web_results = mcp_search_web(question, max_results=3)
     try:
         result = ask_ollama(question, local_chunks, web_results)
     except Exception as e:

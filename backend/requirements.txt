@@ -3,5 +3,7 @@ uvicorn[standard]
 requests
 numpy
 duckduckgo-search
+ddgs
 python-dotenv
 pydantic
+mcp
